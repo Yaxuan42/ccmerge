@@ -1,6 +1,6 @@
 {
   "name": "ccmerge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Merge Claude Code usage data across multiple devices for unified /stats and /insights",
   "type": "module",
   "bin": {

@@ -2,14 +2,15 @@ import { homedir } from "os";
 import { join } from "path";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 
-export interface DeviceConfig {
-  name: string;
-  addedAt: string;
-}
+// --- repo-based config ---
 
 export interface CcmergeConfig {
-  store: string;
-  devices: DeviceConfig[];
+  /** GitHub repo URL (e.g. "https://github.com/Yaxuan42/cc-sync.git") */
+  repo: string;
+  /** Local clone path */
+  repoPath: string;
+  /** This device's name */
+  device: string;
 }
 
 const CONFIG_DIR = join(homedir(), ".ccmerge");
@@ -19,21 +20,25 @@ export const CLAUDE_DIR = join(homedir(), ".claude");
 export const CLAUDE_PROJECTS_DIR = join(CLAUDE_DIR, "projects");
 export const STATS_CACHE_FILE = join(CLAUDE_DIR, "stats-cache.json");
 
-export function getDefaultStore(): string {
-  // Prefer iCloud if available on macOS
-  const icloud = join(
-    homedir(),
-    "Library/Mobile Documents/com~apple~CloudDocs/ccmerge",
-  );
-  if (existsSync(join(homedir(), "Library/Mobile Documents/com~apple~CloudDocs"))) {
-    return icloud;
-  }
-  return join(CONFIG_DIR, "store");
+export const DEFAULT_REPO_PATH = join(CONFIG_DIR, "repo");
+
+/** Get the devices directory inside the repo */
+export function devicesDir(repoPath: string): string {
+  return join(repoPath, "devices");
+}
+
+/** Get this device's sessions directory inside the repo */
+export function deviceSessionsDir(repoPath: string, device: string): string {
+  return join(repoPath, "devices", device, "claude-sessions");
 }
 
 export function loadConfig(): CcmergeConfig | null {
   if (!existsSync(CONFIG_FILE)) return null;
-  return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+  try {
+    return JSON.parse(readFileSync(CONFIG_FILE, "utf-8"));
+  } catch {
+    return null;
+  }
 }
 
 export function saveConfig(config: CcmergeConfig): void {
