@@ -1,6 +1,6 @@
 # ccmerge
 
-Merge Claude Code usage data across multiple devices so `/stats` and `/insights` work with all your sessions — not just the current machine.
+Sync Claude Code sessions and skills across devices via GitHub — so `/stats` and `/insights` see everything.
 
 [English](#the-problem) | [中文](#问题)
 
@@ -8,22 +8,26 @@ Merge Claude Code usage data across multiple devices so `/stats` and `/insights`
 
 ## The Problem
 
-Claude Code's `/stats` and `/insights` only read from the local `~/.claude/projects/` directory. If you use Claude Code on multiple devices (e.g. a Mac Mini and a MacBook), each device only sees its own sessions.
+Claude Code's `/stats` and `/insights` only read from local `~/.claude/projects/`. If you use Claude Code on multiple devices, each device is blind to the other.
+
+Custom skills have the same problem: create a skill on your desktop, and your laptop doesn't have it. Neither does OpenClaw.
 
 ## How It Works
 
-`ccmerge` syncs session JSONL files between devices through a shared store (iCloud, rsync, NAS, etc.):
+`ccmerge` uses a **private GitHub repo** as the sync backend. Every change is a git commit — trackable, auditable, rollback-able.
 
 ```
-Mac Mini                         MacBook
-~/.claude/projects/ ──push──▶    ──push──▶
-                            Shared Store
-~/.claude/projects/ ◀──pull──    ◀──pull──
+Mac Mini                              MacBook
+~/.claude/projects/ ──push──▶  GitHub  ◀──push── ~/.claude/projects/
+~/.claude/skills/   ──push──▶  (repo)  ◀──push── ~/.claude/skills/
+                    ◀──pull──          ──pull──▶
 ```
 
-After pulling, it deletes `stats-cache.json` so Claude Code's native `/stats` recalculates with all sessions. `/insights` automatically picks up all sessions since it reads directly from `~/.claude/projects/`.
+After pulling:
+- Sessions land in `~/.claude/projects/` — `/stats` and `/insights` work natively
+- Skills are symlinked to `~/.claude/skills/` and `~/.openclaw/skills/` — both tools discover them
 
-**No separate dashboard. No new analytics engine. Just sync — then use Claude Code normally.**
+**No dashboard. No database. Just git.**
 
 ## Install
 
@@ -31,107 +35,147 @@ After pulling, it deletes `stats-cache.json` so Claude Code's native `/stats` re
 npm i -g ccmerge
 ```
 
+Prerequisites: `git`, `git-lfs` (`brew install git-lfs`)
+
 ## Quick Start
 
-Run on **both** devices, pointing to the same shared store:
-
 ```bash
-# Using iCloud (macOS)
-ccmerge init --store "~/Library/Mobile Documents/com~apple~CloudDocs/ccmerge" --device mac-mini
-ccmerge init --store "~/Library/Mobile Documents/com~apple~CloudDocs/ccmerge" --device macbook
+# 1. Create a private repo on GitHub (e.g. Yaxuan42/cc-sync)
 
-# Or using any shared directory (rsync, NAS, etc.)
-ccmerge init --store /path/to/shared/ccmerge --device mac-mini
-```
+# 2. Init on each device
+ccmerge init --repo https://github.com/YOU/cc-sync.git --device mac-mini
+ccmerge init --repo https://github.com/YOU/cc-sync.git --device macbook
 
-Then sync:
-
-```bash
-# On each device — push local, pull remote
+# 3. Daily workflow — one command
 ccmerge sync
-
-# Or separately
-ccmerge push
-ccmerge pull
 ```
 
-Now run `/stats` or `/insights` in Claude Code — you'll see data from all devices.
+Now run `/stats` or `/insights` in Claude Code — data from all devices.
 
 ## Commands
 
 | Command | Description |
 |---|---|
-| `ccmerge init` | Set up store path and device name |
-| `ccmerge push` | Push local sessions to the shared store |
-| `ccmerge pull` | Pull other devices' sessions into local `~/.claude/` |
-| `ccmerge sync` | Push + pull in one step |
-| `ccmerge status` | Show store and device overview |
+| `ccmerge init --repo <url>` | Clone sync repo, scaffold structure, configure LFS |
+| `ccmerge push` | Copy local sessions + skills to repo, git commit & push |
+| `ccmerge pull` | Git pull, deploy sessions to `~/.claude/`, symlink skills |
+| `ccmerge sync` | Pull + push in one step (recommended) |
+| `ccmerge status` | Show repo state, per-device stats, skill counts |
 | `ccmerge reset-cache` | Force `/stats` to recalculate |
 
 ## Options
 
 ```
 init:
-  -s, --store <path>    Shared store path (default: iCloud or ~/.ccmerge/store)
-  -d, --device <name>   Name for this device (default: hostname)
+  -r, --repo <url>      GitHub repo URL (required)
+  -d, --device <name>   Device name (default: hostname)
+  -p, --path <path>     Local clone path (default: ~/.ccmerge/repo)
 
 push / pull / sync:
-  -d, --device <name>   Override device name
+  --sessions-only       Only sync sessions
+  --skills-only         Only sync skills
 ```
 
-## How Sync Works
+## What Gets Synced
 
-1. **Push** copies your local `~/.claude/projects/**/*.jsonl` (and subagent/tool-result dirs) to the shared store under `store/{device}/projects/`.
-2. **Pull** copies other devices' sessions from the store into your local `~/.claude/projects/`. Session IDs are UUIDs — no conflicts.
-3. After pull, `stats-cache.json` is deleted so `/stats` recalculates from all sessions.
-4. A manifest tracks file mtimes for **incremental sync** — only changed sessions are copied.
-
-### What Gets Synced
-
-- Session JSONL files (full conversation logs)
-- Subagent logs (`subagents/*.jsonl`)
-- Tool result files (`tool-results/toolu_*.txt`)
-
-### Privacy Note
-
-Session JSONL files contain your full conversation history. Only use shared stores you control (iCloud, local NAS, encrypted volume, etc.).
-
-## Store Layout
+### Sessions (per device, no conflicts)
 
 ```
-store/
-├── mac-mini/
-│   ├── manifest.json
-│   └── projects/
-│       ├── -Users-yaxuan/
-│       │   ├── {session-id}.jsonl
-│       │   └── {session-id}/subagents/...
-│       └── -Users-yaxuan-myproject/...
-└── macbook/
-    ├── manifest.json
-    └── projects/...
+repo/devices/{device}/claude-sessions/
+  {project-dir}/{session-id}.jsonl
+  {project-dir}/{session-id}/subagents/...
 ```
+
+- JSONL files tracked by git-lfs (keeps repo size manageable)
+- Each device writes to its own directory — UUID-based, zero conflict risk
+- Manifest tracks mtimes for incremental sync
+
+### Skills (shared, both tools)
+
+```
+repo/skills/
+  feishu-doc/SKILL.md
+  my-skill.md
+  ...
+repo/skill-lock.json              # third-party skill manifest
+```
+
+- **Custom skills**: actual files synced to `repo/skills/`, then symlinked to:
+  - `~/.claude/skills/{name}` (Claude Code)
+  - `~/.openclaw/skills/{name}` (OpenClaw, auto-detected)
+- **Third-party skills**: only `skill-lock.json` is synced (like `package-lock.json`). Run `claude skill install` on the other device to install them.
+
+### OpenClaw Compatibility
+
+Skills use `SKILL.md` with YAML frontmatter — compatible with both Claude Code and OpenClaw. OpenClaw-specific metadata goes in the frontmatter:
+
+```yaml
+---
+name: my-skill
+description: When to use this skill...
+metadata:
+  openclaw:
+    emoji: "🔧"
+    always: false
+---
+```
+
+Claude Code ignores `metadata.openclaw`. OpenClaw reads it. One file, both tools.
+
+## Repo Layout
+
+```
+cc-sync/                          # Private GitHub repo
+├── .gitattributes                # *.jsonl filter=lfs
+├── .gitignore
+├── devices/
+│   ├── mac-mini/
+│   │   ├── manifest.json
+│   │   └── claude-sessions/
+│   │       └── {project-dir}/{session}.jsonl
+│   └── macbook/
+│       └── ...
+├── skills/                       # Custom skills (shared)
+│   ├── feishu-doc/
+│   │   └── SKILL.md
+│   └── my-skill.md
+└── skill-lock.json               # Third-party skill manifest
+```
+
+## Privacy & Security
+
+- The sync repo **must be private**. Session logs contain full conversation history.
+- `.gitignore` excludes `.env`, `*.pem`, `*.key` by default.
+- JSONL files are tracked via git-lfs — not stored inline in git objects.
+
+## License
+
+MIT
 
 ---
 
 ## 问题
 
-Claude Code 的 `/stats` 和 `/insights` 只读取本机 `~/.claude/projects/` 目录下的数据。如果你在多台设备上使用 Claude Code（比如 Mac Mini + MacBook），每台设备只能看到自己的会话记录。
+Claude Code 的 `/stats` 和 `/insights` 只读取本机 `~/.claude/projects/`。多设备使用时，每台设备只能看到自己的数据。
+
+自定义 Skills 也一样：在台式机创建的 skill，笔记本上没有，OpenClaw 也没有。
 
 ## 工作原理
 
-`ccmerge` 通过一个共享存储（iCloud、rsync、NAS 等）在设备间同步会话 JSONL 文件：
+`ccmerge` 用一个**私有 GitHub 仓库**作为同步后端。每次变更都是 git commit — 可追踪、可审计、可回滚。
 
 ```
-Mac Mini                         MacBook
-~/.claude/projects/ ──push──▶    ──push──▶
-                            共享存储
-~/.claude/projects/ ◀──pull──    ◀──pull──
+Mac Mini                              MacBook
+~/.claude/projects/ ──push──▶  GitHub  ◀──push── ~/.claude/projects/
+~/.claude/skills/   ──push──▶  (repo)  ◀──push── ~/.claude/skills/
+                    ◀──pull──          ──pull──▶
 ```
 
-拉取后自动删除 `stats-cache.json`，Claude Code 原生的 `/stats` 会从所有会话重新计算。`/insights` 直接读取 `~/.claude/projects/`，自动包含所有设备的数据。
+Pull 后：
+- Sessions 部署到 `~/.claude/projects/` — `/stats` 和 `/insights` 原生工作
+- Skills 通过 symlink 指向 `~/.claude/skills/` 和 `~/.openclaw/skills/` — 两个工具都能发现
 
-**不搞单独的仪表盘，不造新的分析引擎。只做同步 — 然后照常使用 Claude Code。**
+**不造仪表盘，不造数据库。只用 git。**
 
 ## 安装
 
@@ -139,86 +183,71 @@ Mac Mini                         MacBook
 npm i -g ccmerge
 ```
 
+前置依赖：`git`、`git-lfs`（`brew install git-lfs`）
+
 ## 快速开始
 
-在**两台**设备上执行，指向同一个共享存储：
-
 ```bash
-# 使用 iCloud（macOS）
-ccmerge init --store "~/Library/Mobile Documents/com~apple~CloudDocs/ccmerge" --device mac-mini
-ccmerge init --store "~/Library/Mobile Documents/com~apple~CloudDocs/ccmerge" --device macbook
+# 1. 在 GitHub 创建一个私有仓库（如 Yaxuan42/cc-sync）
 
-# 或使用任意共享目录（rsync、NAS 等）
-ccmerge init --store /path/to/shared/ccmerge --device mac-mini
-```
+# 2. 在每台设备上初始化
+ccmerge init --repo https://github.com/YOU/cc-sync.git --device mac-mini
+ccmerge init --repo https://github.com/YOU/cc-sync.git --device macbook
 
-然后同步：
-
-```bash
-# 在每台设备上 — 推送本地，拉取远程
+# 3. 日常工作流 — 一条命令
 ccmerge sync
-
-# 或分开执行
-ccmerge push
-ccmerge pull
 ```
 
-现在在 Claude Code 中运行 `/stats` 或 `/insights` — 就能看到所有设备的数据了。
+现在在 Claude Code 中运行 `/stats` 或 `/insights` — 所有设备的数据都在。
 
 ## 命令
 
 | 命令 | 说明 |
 |---|---|
-| `ccmerge init` | 设置存储路径和设备名 |
-| `ccmerge push` | 推送本地会话到共享存储 |
-| `ccmerge pull` | 拉取其他设备的会话到本地 `~/.claude/` |
-| `ccmerge sync` | 一步完成推送 + 拉取 |
-| `ccmerge status` | 查看存储和设备概况 |
+| `ccmerge init --repo <url>` | 克隆同步仓库，初始化目录结构，配置 LFS |
+| `ccmerge push` | 复制本地 sessions + skills 到仓库，git commit & push |
+| `ccmerge pull` | Git pull，部署 sessions 到 `~/.claude/`，symlink skills |
+| `ccmerge sync` | 一步完成 pull + push（推荐） |
+| `ccmerge status` | 显示仓库状态、各设备统计、skill 数量 |
 | `ccmerge reset-cache` | 强制 `/stats` 重新计算 |
 
 ## 参数
 
 ```
 init:
-  -s, --store <path>    共享存储路径（默认: iCloud 或 ~/.ccmerge/store）
+  -r, --repo <url>      GitHub 仓库 URL（必填）
   -d, --device <name>   设备名称（默认: 主机名）
+  -p, --path <path>     本地克隆路径（默认: ~/.ccmerge/repo）
 
 push / pull / sync:
-  -d, --device <name>   覆盖设备名称
+  --sessions-only       只同步 sessions
+  --skills-only         只同步 skills
 ```
 
-## 同步机制
+## 同步内容
 
-1. **Push** 将本地 `~/.claude/projects/**/*.jsonl`（及子代理/工具结果目录）复制到共享存储的 `store/{设备名}/projects/` 下。
-2. **Pull** 将其他设备的会话从共享存储复制到本地 `~/.claude/projects/`。会话 ID 是 UUID — 不会冲突。
-3. Pull 后删除 `stats-cache.json`，`/stats` 会从所有会话重新计算。
-4. 使用 manifest 记录文件修改时间实现**增量同步** — 只复制有变化的会话。
+### Sessions（按设备隔离，无冲突）
 
-### 同步内容
+- JSONL 文件通过 git-lfs 追踪（控制仓库体积）
+- 每台设备写自己的目录 — UUID 天然不冲突
+- Manifest 记录 mtime 实现增量同步
 
-- 会话 JSONL 文件（完整对话记录）
-- 子代理日志（`subagents/*.jsonl`）
-- 工具结果文件（`tool-results/toolu_*.txt`）
+### Skills（共享，双工具通用）
 
-### 隐私提示
+- **自定义 skills**：实际文件同步到 `repo/skills/`，然后 symlink 到：
+  - `~/.claude/skills/{name}`（Claude Code）
+  - `~/.openclaw/skills/{name}`（OpenClaw，自动检测）
+- **三方 skills**：只同步 `skill-lock.json`（类似 `package-lock.json`）。另一台设备执行 `claude skill install` 即可安装。
 
-会话 JSONL 文件包含完整的对话历史。请只使用你自己控制的共享存储（iCloud、本地 NAS、加密卷等）。
+### OpenClaw 兼容
 
-## 存储结构
+Skills 使用 `SKILL.md` + YAML frontmatter，Claude Code 和 OpenClaw 都兼容。OpenClaw 专属元数据放在 frontmatter 中，Claude Code 会忽略它。
 
-```
-store/
-├── mac-mini/
-│   ├── manifest.json
-│   └── projects/
-│       ├── -Users-yaxuan/
-│       │   ├── {session-id}.jsonl
-│       │   └── {session-id}/subagents/...
-│       └── -Users-yaxuan-myproject/...
-└── macbook/
-    ├── manifest.json
-    └── projects/...
-```
+## 隐私与安全
+
+- 同步仓库**必须是私有的**。Session 日志包含完整对话历史。
+- `.gitignore` 默认排除 `.env`、`*.pem`、`*.key`。
+- JSONL 通过 git-lfs 追踪，不以内联方式存储在 git 对象中。
 
 ## License
 

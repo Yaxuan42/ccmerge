@@ -4,7 +4,7 @@ import { Command } from "commander";
 import chalk from "chalk";
 import Table from "cli-table3";
 import { hostname } from "os";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import {
   loadConfig,
@@ -12,22 +12,24 @@ import {
   DEFAULT_REPO_PATH,
   type CcmergeConfig,
 } from "./config.js";
-import { cloneRepo, initRepo, gitPull } from "./git.js";
+import { cloneRepo, initRepo, gitPull, setupLfs } from "./git.js";
 import { pushSessions, pullSessions, invalidateStatsCache } from "./sync.js";
+import { pushSkills, pullSkills, getSkillsStatus } from "./skills.js";
+import { gitCommitAndPush } from "./git.js";
 import { getStatusInfo } from "./status.js";
 
 const program = new Command();
 
 program
   .name("ccmerge")
-  .description("Merge Claude Code sessions across devices via GitHub for unified /stats and /insights")
-  .version("0.2.0");
+  .description("Sync Claude Code sessions & skills across devices via GitHub")
+  .version("0.3.0");
 
 // ── init ──────────────────────────────────────────────────────────
 
 program
   .command("init")
-  .description("Initialize ccmerge: clone (or create) a GitHub sync repo")
+  .description("Clone sync repo, scaffold structure, configure LFS")
   .requiredOption("-r, --repo <url>", "GitHub repo URL (https or git@)")
   .option("-d, --device <name>", "Name for this device", hostname())
   .option("-p, --path <path>", "Local clone path", DEFAULT_REPO_PATH)
@@ -42,21 +44,26 @@ program
     console.log();
 
     // Clone or detect existing
-    let freshClone = false;
     try {
-      freshClone = cloneRepo(repoUrl, repoPath);
+      const freshClone = cloneRepo(repoUrl, repoPath);
       if (freshClone) {
         console.log(chalk.green("Cloned repo."));
       } else {
         console.log(chalk.dim("Repo already cloned, pulling latest..."));
         gitPull(repoPath);
       }
-    } catch (e: any) {
-      // Clone failed — repo might not exist on GitHub yet. Init locally.
+    } catch {
       console.log(chalk.yellow("Remote not found. Initializing new repo locally..."));
       mkdirSync(repoPath, { recursive: true });
       initRepo(repoPath, repoUrl);
-      freshClone = true;
+    }
+
+    // Setup LFS
+    const lfsOk = setupLfs(repoPath);
+    if (lfsOk) {
+      console.log(chalk.green("git-lfs configured") + chalk.dim(" (*.jsonl tracked)"));
+    } else {
+      console.log(chalk.yellow("git-lfs not available. Install with: brew install git-lfs"));
     }
 
     // Scaffold repo structure
@@ -67,34 +74,69 @@ program
 
     console.log();
     console.log(chalk.green("ccmerge initialized."));
-    console.log(chalk.dim("Next: run `ccmerge push` to push local sessions, or `ccmerge sync`."));
+    console.log(chalk.dim("Next: run `ccmerge push` or `ccmerge sync`."));
   });
 
 // ── push ──────────────────────────────────────────────────────────
 
 program
   .command("push")
-  .description("Copy local sessions to repo and git push")
-  .action(() => {
+  .description("Copy local sessions + skills to repo, git commit & push")
+  .option("--sessions-only", "Only push sessions")
+  .option("--skills-only", "Only push skills")
+  .action((opts) => {
     const config = requireConfig();
+    const { repoPath, device } = config;
+    const doSessions = !opts.skillsOnly;
+    const doSkills = !opts.sessionsOnly;
 
-    console.log(chalk.dim(`Pushing sessions as "${config.device}"...`));
-    const result = pushSessions(config.repoPath, config.device);
+    const parts: string[] = [];
 
-    if (result.copied === 0) {
-      console.log(chalk.dim(`All ${result.skipped} session(s) up to date. Nothing to push.`));
-      return;
+    // Sessions
+    if (doSessions) {
+      console.log(chalk.dim(`Pushing sessions as "${device}"...`));
+      const sr = pushSessions(repoPath, device);
+      if (sr.copied > 0) {
+        console.log(chalk.green(`  ${sr.copied} session(s) copied`) + chalk.dim(` (${sr.skipped} unchanged, ${fmtBytes(sr.totalSize)})`));
+        parts.push(`${sr.copied} sessions`);
+      } else {
+        console.log(chalk.dim(`  ${sr.skipped} session(s) up to date`));
+      }
     }
 
-    console.log(
-      chalk.green(`Copied ${result.copied} session(s)`) +
-      chalk.dim(` (${result.skipped} unchanged, ${fmtBytes(result.totalSize)})`),
-    );
+    // Skills
+    if (doSkills) {
+      console.log(chalk.dim("Pushing skills..."));
+      const sk = pushSkills(repoPath);
+      if (sk.skillsCopied > 0) {
+        console.log(chalk.green(`  ${sk.skillsCopied} skill(s) copied`) + chalk.dim(` (${sk.skillsSkipped} unchanged)`));
+        parts.push(`${sk.skillsCopied} skills`);
+      } else {
+        console.log(chalk.dim(`  ${sk.skillsSkipped} skill(s) up to date`));
+      }
+      if (sk.lockCopied) {
+        console.log(chalk.dim("  skill-lock.json synced"));
+      }
+    }
 
-    if (result.pushed) {
-      console.log(chalk.green("Committed & pushed to GitHub."));
-    } else if (result.committed) {
-      console.log(chalk.yellow("Committed locally, but push failed: ") + chalk.dim(result.error || ""));
+    // Git commit + push
+    if (parts.length > 0) {
+      const msg = `sync(${device}): ${parts.join(", ")} updated`;
+      const git = gitCommitAndPush(repoPath, msg);
+      if (git.pushed) {
+        console.log(chalk.green("Committed & pushed to GitHub."));
+      } else if (git.committed) {
+        console.log(chalk.yellow("Committed locally, push failed: ") + chalk.dim(git.error || ""));
+      }
+    } else {
+      // skill-lock.json might have changed even if no skills changed
+      const msg = `sync(${device}): update metadata`;
+      const git = gitCommitAndPush(repoPath, msg);
+      if (git.pushed) {
+        console.log(chalk.dim("Metadata pushed."));
+      } else if (!git.committed) {
+        console.log(chalk.dim("Nothing to push."));
+      }
     }
   });
 
@@ -102,33 +144,47 @@ program
 
 program
   .command("pull")
-  .description("Git pull and deploy all device sessions into ~/.claude/projects/")
-  .action(() => {
+  .description("Git pull, deploy sessions to ~/.claude/, symlink skills")
+  .option("--sessions-only", "Only pull sessions")
+  .option("--skills-only", "Only pull skills")
+  .action((opts) => {
     const config = requireConfig();
+    const doSessions = !opts.skillsOnly;
+    const doSkills = !opts.sessionsOnly;
 
     console.log(chalk.dim("Pulling from GitHub..."));
-    const result = pullSessions(config.repoPath);
 
-    if (!result.gitPulled && result.error) {
-      console.log(chalk.yellow("Git pull warning: ") + chalk.dim(result.error));
+    // Sessions
+    if (doSessions) {
+      const sr = pullSessions(config.repoPath);
+      if (!sr.gitPulled && sr.error) {
+        console.log(chalk.yellow("  git pull warning: ") + chalk.dim(sr.error));
+      }
+      if (sr.sessionsCopied > 0) {
+        console.log(chalk.green(`  ${sr.sessionsCopied} session(s) deployed`) + chalk.dim(` from [${sr.devices.join(", ")}]`));
+        console.log(chalk.yellow("  stats-cache.json invalidated"));
+      } else if (sr.devices.length > 0) {
+        console.log(chalk.dim(`  sessions up to date (${sr.sessionsSkipped} from [${sr.devices.join(", ")}])`));
+      } else {
+        console.log(chalk.dim("  no device sessions in repo"));
+      }
     }
 
-    if (result.devices.length === 0) {
-      console.log(chalk.yellow("No device sessions found in repo."));
-      return;
-    }
-
-    if (result.sessionsCopied > 0) {
-      console.log(
-        chalk.green(`Deployed ${result.sessionsCopied} session(s)`) +
-        chalk.dim(` from [${result.devices.join(", ")}]`) +
-        chalk.dim(` (${result.sessionsSkipped} unchanged)`),
-      );
-      console.log(chalk.yellow("stats-cache.json invalidated — /stats will recalculate."));
-    } else {
-      console.log(
-        chalk.dim(`All sessions up to date (${result.sessionsSkipped} from [${result.devices.join(", ")}]).`),
-      );
+    // Skills
+    if (doSkills) {
+      const sk = pullSkills(config.repoPath);
+      if (sk.skillsLinked > 0) {
+        console.log(
+          chalk.green(`  ${sk.skillsLinked} skill(s) linked`) +
+          chalk.dim(` → Claude Code`) +
+          (sk.openclawLinked ? chalk.dim(` + OpenClaw`) : ""),
+        );
+      } else if (sk.skillsSkipped > 0) {
+        console.log(chalk.dim(`  ${sk.skillsSkipped} skill(s) already linked`));
+      }
+      if (sk.lockCopied) {
+        console.log(chalk.dim("  skill-lock.json updated. Run `claude skill install` to sync third-party skills."));
+      }
     }
   });
 
@@ -136,50 +192,88 @@ program
 
 program
   .command("sync")
-  .description("Pull remote + push local (recommended daily workflow)")
-  .action(() => {
+  .description("Pull + push (recommended daily workflow)")
+  .option("--sessions-only", "Only sync sessions")
+  .option("--skills-only", "Only sync skills")
+  .action((opts) => {
     const config = requireConfig();
     const { device, repoPath } = config;
+    const doSessions = !opts.skillsOnly;
+    const doSkills = !opts.sessionsOnly;
 
-    // Pull first (get others' changes before pushing ours)
+    // Pull first
     console.log(chalk.bold("pull"));
-    const pullResult = pullSessions(repoPath);
-
-    if (!pullResult.gitPulled && pullResult.error) {
-      console.log(chalk.yellow("  git pull warning: ") + chalk.dim(pullResult.error));
+    const pullGit = gitPull(repoPath);
+    if (!pullGit.ok) {
+      console.log(chalk.yellow("  git pull warning: ") + chalk.dim(pullGit.output));
     }
-    if (pullResult.sessionsCopied > 0) {
-      console.log(chalk.green(`  ${pullResult.sessionsCopied} session(s) deployed`) + chalk.dim(` from [${pullResult.devices.join(", ")}]`));
-    } else {
-      console.log(chalk.dim("  up to date"));
+
+    if (doSessions) {
+      const sr = pullSessions(repoPath);
+      if (sr.sessionsCopied > 0) {
+        console.log(chalk.green(`  ${sr.sessionsCopied} session(s) deployed`) + chalk.dim(` [${sr.devices.join(", ")}]`));
+      } else {
+        console.log(chalk.dim("  sessions up to date"));
+      }
+    }
+
+    if (doSkills) {
+      const sk = pullSkills(repoPath);
+      if (sk.skillsLinked > 0) {
+        console.log(chalk.green(`  ${sk.skillsLinked} skill(s) linked`));
+      } else {
+        console.log(chalk.dim("  skills up to date"));
+      }
     }
 
     // Push
     console.log(chalk.bold("push"));
-    const pushResult = pushSessions(repoPath, device);
+    const parts: string[] = [];
 
-    if (pushResult.copied > 0) {
-      console.log(chalk.green(`  ${pushResult.copied} session(s) copied → `) + (pushResult.pushed ? chalk.green("pushed") : chalk.yellow("committed (push failed)")));
-    } else {
+    if (doSessions) {
+      const sr = pushSessions(repoPath, device);
+      if (sr.copied > 0) {
+        console.log(chalk.green(`  ${sr.copied} session(s) copied`));
+        parts.push(`${sr.copied} sessions`);
+      } else {
+        console.log(chalk.dim("  sessions up to date"));
+      }
+    }
+
+    if (doSkills) {
+      const sk = pushSkills(repoPath);
+      if (sk.skillsCopied > 0) {
+        console.log(chalk.green(`  ${sk.skillsCopied} skill(s) copied`));
+        parts.push(`${sk.skillsCopied} skills`);
+      } else {
+        console.log(chalk.dim("  skills up to date"));
+      }
+    }
+
+    // Commit + push
+    const msg = parts.length > 0
+      ? `sync(${device}): ${parts.join(", ")} updated`
+      : `sync(${device}): update metadata`;
+    const git = gitCommitAndPush(repoPath, msg);
+    if (git.pushed) {
+      console.log(chalk.green("  pushed"));
+    } else if (!git.committed) {
       console.log(chalk.dim("  nothing to push"));
     }
 
     console.log();
-    if (pullResult.sessionsCopied > 0) {
-      console.log(chalk.yellow("stats-cache invalidated.") + chalk.dim(" Run /stats or /insights in Claude Code."));
-    } else {
-      console.log(chalk.green("Sync complete."));
-    }
+    console.log(chalk.green("Sync complete."));
   });
 
 // ── status ────────────────────────────────────────────────────────
 
 program
   .command("status")
-  .description("Show repo, device, and local session status")
+  .description("Show repo, device, skill, and local session status")
   .action(() => {
     const config = requireConfig();
     const info = getStatusInfo(config.repoPath);
+    const skills = getSkillsStatus(config.repoPath);
 
     // Repo info
     console.log(chalk.bold("Repo:    ") + chalk.cyan(config.repo));
@@ -191,7 +285,7 @@ program
     }
     console.log();
 
-    // Device sessions table
+    // Sessions table
     if (info.devices.length === 0) {
       console.log(chalk.yellow("No device sessions in repo yet. Run `ccmerge push`."));
     } else {
@@ -218,8 +312,16 @@ program
         chalk.bold(fmtBytes(totalSize)),
         "",
       ]);
-
       console.log(table.toString());
+    }
+
+    // Skills info
+    console.log();
+    console.log(chalk.bold("Skills:"));
+    console.log(`  Repo:       ${skills.repoSkillCount} custom skill(s)` + (skills.hasLock ? chalk.dim(" + skill-lock.json") : ""));
+    console.log(`  Claude Code: ${skills.claudeLinked} linked`);
+    if (skills.openclawLinked > 0) {
+      console.log(`  OpenClaw:   ${skills.openclawLinked} linked`);
     }
 
     console.log();
@@ -253,9 +355,6 @@ function fmtBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/**
- * Ensure repo has the expected directory structure + .gitignore + .gitattributes.
- */
 function scaffoldRepo(repoPath: string, device: string): void {
   const devSessions = join(repoPath, "devices", device, "claude-sessions");
   mkdirSync(devSessions, { recursive: true });
@@ -276,22 +375,24 @@ function scaffoldRepo(repoPath: string, device: string): void {
     ].join("\n"));
   }
 
-  // .gitattributes — treat JSONL as binary (no diff, no merge)
+  // .gitattributes — LFS for JSONL
   const ga = join(repoPath, ".gitattributes");
-  if (!existsSync(ga)) {
-    writeFileSync(ga, [
-      "# Treat session logs as binary (no line-level diff/merge)",
-      "*.jsonl binary",
-      "",
-    ].join("\n"));
+  const gaContent = [
+    "# Track session logs with git-lfs",
+    "*.jsonl filter=lfs diff=lfs merge=lfs -text",
+    "",
+  ].join("\n");
+  // Update existing file if it has the old binary-only rule
+  if (!existsSync(ga) || !readFileSync(ga, "utf-8").includes("filter=lfs")) {
+    writeFileSync(ga, gaContent);
   }
 
   // skills/ placeholder
   const skillsDir = join(repoPath, "skills");
   mkdirSync(skillsDir, { recursive: true });
-  const skillsReadme = join(skillsDir, ".gitkeep");
-  if (!existsSync(skillsReadme)) {
-    writeFileSync(skillsReadme, "");
+  const skillsKeep = join(skillsDir, ".gitkeep");
+  if (!existsSync(skillsKeep)) {
+    writeFileSync(skillsKeep, "");
   }
 }
 

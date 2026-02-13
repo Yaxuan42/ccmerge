@@ -22,6 +22,11 @@ export const STATS_CACHE_FILE = join(CLAUDE_DIR, "stats-cache.json");
 
 export const DEFAULT_REPO_PATH = join(CONFIG_DIR, "repo");
 
+export const CLAUDE_SKILLS_DIR = join(CLAUDE_DIR, "skills");
+export const OPENCLAW_SKILLS_DIR = join(homedir(), ".openclaw", "skills");
+export const AGENTS_SKILLS_DIR = join(homedir(), ".agents", "skills");
+export const SKILL_LOCK_FILE = join(homedir(), ".agents", ".skill-lock.json");
+
 /** Get the devices directory inside the repo */
 export function devicesDir(repoPath: string): string {
   return join(repoPath, "devices");

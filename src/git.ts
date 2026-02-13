@@ -32,6 +32,15 @@ export function initRepo(targetPath: string, repoUrl: string): void {
   run(`git remote add origin "${repoUrl}"`, targetPath);
 }
 
+/** Set up git-lfs tracking for *.jsonl in the repo. */
+export function setupLfs(repoPath: string): boolean {
+  const hasLfs = runSafe("git lfs version", repoPath);
+  if (!hasLfs.ok) return false;
+  runSafe("git lfs install --local", repoPath);
+  runSafe("git lfs track '*.jsonl'", repoPath);
+  return true;
+}
+
 /** Pull latest from remote. Returns {ok, output}. */
 export function gitPull(repoPath: string): { ok: boolean; output: string } {
   // Check if remote has any commits first
