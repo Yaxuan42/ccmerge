@@ -17,13 +17,15 @@ import { pushSessions, pullSessions, invalidateStatsCache } from "./sync.js";
 import { pushSkills, pullSkills, getSkillsStatus } from "./skills.js";
 import { gitCommitAndPush } from "./git.js";
 import { getStatusInfo } from "./status.js";
+import { scanFiles, getChangedFiles, type SecretFinding } from "./secret-scan.js";
+import { checkRepoVisibility, SECURITY_GITIGNORE_ENTRIES } from "./repo-check.js";
 
 const program = new Command();
 
 program
   .name("ccmerge")
   .description("Sync Claude Code sessions & skills across devices via GitHub")
-  .version("0.3.0");
+  .version("0.4.0");
 
 // ── init ──────────────────────────────────────────────────────────
 
@@ -33,6 +35,7 @@ program
   .requiredOption("-r, --repo <url>", "GitHub repo URL (https or git@)")
   .option("-d, --device <name>", "Name for this device", hostname())
   .option("-p, --path <path>", "Local clone path", DEFAULT_REPO_PATH)
+  .option("--i-know-what-im-doing", "Allow public repos (dangerous)")
   .action((opts) => {
     const repoUrl: string = opts.repo;
     const device: string = opts.device;
@@ -42,6 +45,29 @@ program
     console.log(chalk.dim(`Device: ${device}`));
     console.log(chalk.dim(`Path:   ${repoPath}`));
     console.log();
+
+    // P0-2: Check repo visibility
+    const visibility = checkRepoVisibility(repoUrl);
+    if (visibility === "public") {
+      console.log(chalk.red.bold("WARNING: This repository is PUBLIC."));
+      console.log(chalk.red("Session logs contain full conversation history."));
+      console.log(chalk.red("Anyone can see your data if you push to a public repo."));
+      console.log();
+      if (!opts.iKnowWhatImDoing) {
+        console.log(chalk.yellow("To proceed anyway, re-run with:"));
+        console.log(chalk.yellow("  ccmerge init --repo <url> --i-know-what-im-doing"));
+        process.exit(1);
+      }
+      console.log(chalk.yellow("Proceeding with public repo (--i-know-what-im-doing)."));
+      console.log();
+    } else if (visibility === "unknown") {
+      console.log(chalk.yellow("Could not verify repo visibility (gh CLI unavailable or repo not found)."));
+      console.log(chalk.yellow("Make sure your sync repo is PRIVATE. Session logs contain conversation history."));
+      console.log();
+    } else {
+      console.log(chalk.green("Repo visibility: private"));
+      console.log();
+    }
 
     // Clone or detect existing
     try {
@@ -66,7 +92,7 @@ program
       console.log(chalk.yellow("git-lfs not available. Install with: brew install git-lfs"));
     }
 
-    // Scaffold repo structure
+    // Scaffold repo structure (with enhanced .gitignore)
     scaffoldRepo(repoPath, device);
 
     // Save local config
@@ -84,11 +110,17 @@ program
   .description("Copy local sessions + skills to repo, git commit & push")
   .option("--sessions-only", "Only push sessions")
   .option("--skills-only", "Only push skills")
+  .option("--skip-scan", "Skip pre-push secret scan (not recommended)")
   .action((opts) => {
     const config = requireConfig();
     const { repoPath, device } = config;
     const doSessions = !opts.skillsOnly;
     const doSkills = !opts.sessionsOnly;
+
+    // P0-1: Secret scan before push
+    if (!runSecretScan(repoPath, opts.skipScan)) {
+      process.exit(1);
+    }
 
     const parts: string[] = [];
 
@@ -195,6 +227,7 @@ program
   .description("Pull + push (recommended daily workflow)")
   .option("--sessions-only", "Only sync sessions")
   .option("--skills-only", "Only sync skills")
+  .option("--skip-scan", "Skip pre-push secret scan (not recommended)")
   .action((opts) => {
     const config = requireConfig();
     const { device, repoPath } = config;
@@ -224,6 +257,12 @@ program
       } else {
         console.log(chalk.dim("  skills up to date"));
       }
+    }
+
+    // P0-1: Secret scan before push
+    console.log(chalk.bold("scan"));
+    if (!runSecretScan(repoPath, opts.skipScan)) {
+      process.exit(1);
     }
 
     // Push
@@ -338,6 +377,27 @@ program
     console.log(chalk.green("stats-cache.json deleted. /stats will recalculate."));
   });
 
+// ── scan ──────────────────────────────────────────────────────────
+
+program
+  .command("scan")
+  .description("Run secret scan on the sync repo (without pushing)")
+  .action(() => {
+    const config = requireConfig();
+    const files = getChangedFiles(config.repoPath);
+    if (files.length === 0) {
+      console.log(chalk.dim("No changed files to scan."));
+      return;
+    }
+    const result = scanFiles(files, config.repoPath);
+    console.log(chalk.dim(`Scanned ${result.filesScanned} file(s).`));
+    if (result.findings.length === 0) {
+      console.log(chalk.green("No secrets found."));
+    } else {
+      printFindings(result.findings);
+    }
+  });
+
 // ── helpers ───────────────────────────────────────────────────────
 
 function requireConfig(): CcmergeConfig {
@@ -359,20 +419,22 @@ function scaffoldRepo(repoPath: string, device: string): void {
   const devSessions = join(repoPath, "devices", device, "claude-sessions");
   mkdirSync(devSessions, { recursive: true });
 
-  // .gitignore
+  // P0-2: Enhanced .gitignore with security entries
   const gi = join(repoPath, ".gitignore");
   if (!existsSync(gi)) {
-    writeFileSync(gi, [
-      "# Secrets",
-      ".env",
-      "*.pem",
-      "*.key",
-      "",
-      "# OS",
-      ".DS_Store",
-      "Thumbs.db",
-      "",
-    ].join("\n"));
+    writeFileSync(gi, SECURITY_GITIGNORE_ENTRIES.join("\n"));
+  } else {
+    // Ensure essential security entries exist
+    const existing = readFileSync(gi, "utf-8");
+    const missing: string[] = [];
+    for (const entry of SECURITY_GITIGNORE_ENTRIES) {
+      if (entry && !entry.startsWith("#") && !existing.includes(entry)) {
+        missing.push(entry);
+      }
+    }
+    if (missing.length > 0) {
+      writeFileSync(gi, existing.trimEnd() + "\n\n# Security (added by ccmerge v0.4.0)\n" + missing.join("\n") + "\n");
+    }
   }
 
   // .gitattributes — LFS for JSONL
@@ -393,6 +455,52 @@ function scaffoldRepo(repoPath: string, device: string): void {
   const skillsKeep = join(skillsDir, ".gitkeep");
   if (!existsSync(skillsKeep)) {
     writeFileSync(skillsKeep, "");
+  }
+}
+
+/**
+ * Run secret scan. Returns true if safe to proceed, false if blocked.
+ */
+function runSecretScan(repoPath: string, skipScan: boolean): boolean {
+  if (skipScan) {
+    console.log(chalk.yellow.bold("  WARNING: Secret scan skipped (--skip-scan)."));
+    console.log(chalk.yellow("  You are responsible for ensuring no secrets are pushed."));
+    return true;
+  }
+
+  const files = getChangedFiles(repoPath);
+  if (files.length === 0) {
+    console.log(chalk.dim("  scan: no changed files"));
+    return true;
+  }
+
+  const result = scanFiles(files, repoPath);
+  console.log(chalk.dim(`  scan: ${result.filesScanned} file(s) checked`));
+
+  if (result.findings.length === 0) {
+    console.log(chalk.green("  scan: clean"));
+    return true;
+  }
+
+  // Block push
+  console.log();
+  console.log(chalk.red.bold("  SECRET(S) DETECTED — push blocked."));
+  printFindings(result.findings);
+  console.log();
+  console.log(chalk.yellow("Options:"));
+  console.log(chalk.yellow("  1. Remove the secret(s) and retry"));
+  console.log(chalk.yellow("  2. Add to .ccmerge-ignore-secrets (path:<file> or rule:<pattern-id>)"));
+  console.log(chalk.yellow("  3. Use --skip-scan to force (not recommended)"));
+  return false;
+}
+
+function printFindings(findings: SecretFinding[]): void {
+  for (const f of findings) {
+    console.log(
+      chalk.red(`  ${f.file}:${f.line}`) +
+      chalk.dim(` [${f.label}]`) +
+      chalk.dim(` ${f.snippet}`),
+    );
   }
 }
 

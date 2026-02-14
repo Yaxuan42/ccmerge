@@ -1,6 +1,6 @@
 {
   "name": "ccmerge",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Merge Claude Code usage data across multiple devices for unified /stats and /insights",
   "type": "module",
   "bin": {
@@ -10,7 +10,8 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/cli.js",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "node --test dist/__tests__/secret-scan.test.js"
   },
   "keywords": [
     "claude-code",
