@@ -1,8 +1,8 @@
 # ccmerge
 
-[![npm version](https://img.shields.io/npm/v/ccmerge)](https://www.npmjs.com/package/ccmerge)
-[![license](https://img.shields.io/npm/l/ccmerge)](./LICENSE)
-[![node](https://img.shields.io/node/v/ccmerge)](https://nodejs.org)
+[![npm version](https://img.shields.io/npm/v/@yaxuan42/ccmerge)](https://www.npmjs.com/package/@yaxuan42/ccmerge)
+[![license](https://img.shields.io/npm/l/@yaxuan42/ccmerge)](./LICENSE)
+[![node](https://img.shields.io/node/v/@yaxuan42/ccmerge)](https://nodejs.org)
 
 **Git-native sync for Claude Code sessions & skills across devices — `/stats` and `/insights` see everything, everywhere.**
 
@@ -40,7 +40,9 @@ After sync: `/stats` and `/insights` see all devices. Skills work everywhere.
 ## Install
 
 ```bash
-npm i -g ccmerge
+npm i -g @yaxuan42/ccmerge
+# or try without installing:
+npx @yaxuan42/ccmerge --help
 ```
 
 Prerequisites: Node.js >= 18, `git`, `git-lfs` (`brew install git-lfs`)
@@ -335,7 +337,9 @@ Mac Mini                              MacBook
 ## 安装
 
 ```bash
-npm i -g ccmerge
+npm i -g @yaxuan42/ccmerge
+# 或者不安装直接试用：
+npx @yaxuan42/ccmerge --help
 ```
 
 前置依赖：Node.js >= 18、`git`、`git-lfs`（`brew install git-lfs`）
