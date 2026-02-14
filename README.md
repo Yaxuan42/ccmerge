@@ -1,6 +1,10 @@
 # ccmerge
 
-**Sync Claude Code sessions and skills across devices — so `/stats` and `/insights` see everything.**
+[![npm version](https://img.shields.io/npm/v/ccmerge)](https://www.npmjs.com/package/ccmerge)
+[![license](https://img.shields.io/npm/l/ccmerge)](./LICENSE)
+[![node](https://img.shields.io/node/v/ccmerge)](https://nodejs.org)
+
+**Git-native sync for Claude Code sessions & skills across devices — `/stats` and `/insights` see everything, everywhere.**
 
 [English](#why) | [中文](#为什么)
 
@@ -39,7 +43,7 @@ After sync: `/stats` and `/insights` see all devices. Skills work everywhere.
 npm i -g ccmerge
 ```
 
-Prerequisites: `git`, `git-lfs` (`brew install git-lfs`)
+Prerequisites: Node.js >= 18, `git`, `git-lfs` (`brew install git-lfs`)
 
 ## Quick Start
 
@@ -203,8 +207,11 @@ ccmerge doesn't run as a daemon. Use system tools to automate:
 ```bash
 # In your project repo's .git/hooks/post-commit:
 #!/bin/sh
-ccmerge sync --skip-scan 2>/dev/null &
+ccmerge sync 2>/dev/null &
 ```
+
+> If you explicitly want to skip the pre-push secret scan (not recommended):
+> `ccmerge sync --skip-scan 2>/dev/null &`
 
 ### Cron (every 30 min)
 
@@ -331,7 +338,7 @@ Mac Mini                              MacBook
 npm i -g ccmerge
 ```
 
-前置依赖：`git`、`git-lfs`（`brew install git-lfs`）
+前置依赖：Node.js >= 18、`git`、`git-lfs`（`brew install git-lfs`）
 
 ## 快速开始
 
@@ -481,8 +488,11 @@ ccmerge 不作为守护进程运行。用系统工具自动化：
 ```bash
 # 在项目仓库的 .git/hooks/post-commit 中：
 #!/bin/sh
-ccmerge sync --skip-scan 2>/dev/null &
+ccmerge sync 2>/dev/null &
 ```
+
+> 如果你明确要跳过 Secret 扫描（不推荐）：
+> `ccmerge sync --skip-scan 2>/dev/null &`
 
 ### Cron（每 30 分钟）
 
